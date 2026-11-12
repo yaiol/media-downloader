@@ -1,0 +1,19 @@
+[package]
+name = "media-downloader-engine"
+version = "0.1.0"
+edition = "2024"
+
+# ⚠ The library name is FIXED at `engine`, whatever the package is called: the package name
+# carries the app id and changes on scaffold, and a crate name is a code identifier, so letting it
+# vary would rewrite `.rs` source on every rename. The app imports it as `engine::…`.
+[lib]
+name = "engine"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+lofty = "0.25.4"
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+sha2 = "0.11.1"
+ureq = "3.4.2"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }

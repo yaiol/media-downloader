@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* App-specific, non-token styles only. The palette and every shared class come from the catalog
+   CSS files that load before this one. */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--uis-bg);
+  color: var(--uis-text);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.workspace { padding: 16px 20px; }
+.workspace-empty { color: var(--uis-text-mute); margin: 16px 0; }
+
+/* ─── The downloads: the links list, the add bar and the options panel ──────────────────────────
+   Layout only. Every colour is a token and every control is the catalog's own class. */
+.dl-body { flex: 1; min-height: 0; display: flex; }
+.dl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dl-panel { width: 236px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-left: 1px solid var(--uis-border); overflow-y: auto; }
+.dl-list { padding: 8px 12px; flex: 1; min-height: 0; }
+.dl-empty { color: var(--uis-text-mute); margin: 16px 4px; }
+.dl-row { cursor: default; }
+.dl-cover { width: 64px; height: 40px; justify-content: center; color: var(--uis-text-mute); background: var(--uis-bg-row); border-radius: 6px; overflow: hidden; }
+.dl-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dl-state-ok  { color: var(--uis-ok); }
+.dl-state-err { color: var(--uis-danger); }
+.dl-state-run { color: var(--uis-accent); }
+.dl-error { color: var(--uis-danger); white-space: normal; user-select: text; }
+.dl-bar { height: 4px; margin-top: 6px; background: var(--uis-bg-row); border-radius: 2px; overflow: hidden; }
+.dl-bar-fill { height: 100%; background: var(--uis-accent); }
+.dl-player-title { font-size: 12px; font-weight: 600; color: var(--uis-text); flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-player-time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.dl-seek { flex: 1; min-width: 60px; height: 4px; accent-color: var(--uis-accent); cursor: pointer; }
+.dl-vol { width: 72px; height: 4px; flex-shrink: 0; accent-color: var(--uis-accent); cursor: pointer; }
+.dl-status { font-size: 12px; color: var(--uis-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* With the player in the footer the status word gives way to it. */
+.dl-status-side { max-width: 220px; flex-shrink: 1; }
+
+/* The preset editor (Settings > Presets): the list on the left, the options of the selected preset on the right. */
+.manager { display: flex; gap: 24px; align-items: flex-start; height: 100%; min-height: 0; }
+.manager-list { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }
+.manager-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.manager-form { flex: 1; min-width: 0; max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
+.manager-row { display: flex; gap: 8px; align-items: center; }
+.manager-row > input { flex: 1; min-width: 0; }
+.manager-tokens { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.manager-example { font-family: var(--font-mono, monospace); font-size: 12px; opacity: 0.85; word-break: break-all; }
