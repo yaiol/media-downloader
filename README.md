@@ -84,7 +84,7 @@ Nothing has to be set up first. The app installs yt-dlp, [ffmpeg](https://ffmpeg
 - **Repairs itself** - when a download fails, the app updates yt-dlp and tries once more before reporting an error.
 - **Tagged audio** - title, artist, album, track number, genre, year and cover are written into the files.
 - **Sign-in when a site asks** - borrows the login of a browser on the computer, or a cookies file you point it at, and only for the download that needs it.
-- **A player** - play a finished file, and step through the finished ones, without leaving the app.
+- **A player** - play a finished file, a video with its picture, and step through the finished ones, without leaving the app.
 - **Nothing lost on restart** - both lists come back as you left them.
 - **Your language** - the interface is available in 52 languages.
 
@@ -122,7 +122,7 @@ A Cargo workspace of two crates: the **engine** (everything that is not the wind
 | Download engine | yt-dlp, a separate executable the app downloads and installs itself |
 | Merging and conversion | ffmpeg, installed the same way |
 | Script runtime for some sites | Deno, installed the same way |
-| Player | ffmpeg decodes, rodio plays |
+| Player | ffmpeg decodes; rodio plays the sound, the picture reaches the window as a motion-JPEG stream from a local server |
 | Audio tags | lofty |
 | Interface languages | flat JSON bundles embedded at build time |
 | Packaging | `dx bundle` (NSIS, deb, AppImage, dmg) |

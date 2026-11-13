@@ -8,15 +8,15 @@
 
 use crate::{
     catalog::UisFldLabelled,
-    i18n, links, manager,
-    player::{Player, PlayerBar, Track},
+    converters, i18n, links, manager,
+    player::{Player, PlayerPane, Track},
     settings::{self, Settings},
     tools::{self, RUNNER, RunState, ToolPopup},
 };
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::ld_icons::{LdFilm, LdFolder, LdFolderOpen, LdFolderSearch, LdMusic, LdPause, LdPlay, LdRotateCw, LdSquare, LdVideo, LdVolume2, LdX},
+    icons::ld_icons::{LdAudioLines, LdClapperboard, LdFilm, LdFolder, LdFolderOpen, LdFolderSearch, LdMusic, LdPause, LdPlay, LdRotateCw, LdSquare, LdVideo, LdVolume2, LdX},
 };
 use engine::runner::{Job, JobStatus, Overwrite, Tags};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
@@ -142,6 +142,8 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
     let mut lookup_tick = use_signal(|| 0u32);
     let statuses = run.statuses;
     let player = Player::new();
+    // The converters a finished file can be opened in (the video one, the audio one), looked for once.
+    let (video_converter, audio_converter) = use_hook(|| (converters::VIDEO.installed(), converters::AUDIO.installed()));
 
     // How many download at once follows the panel.
     use_effect(move || RUNNER.set_parallel(settings.read().parallel as usize));
@@ -262,7 +264,7 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
         .iter()
         .filter(|r| r.audio == on_audio)
         .filter_map(|r| match r.status(&snapshot) {
-            Some(JobStatus::Done(Some(p))) => Some(Track { path: p, title: r.title.clone() }),
+            Some(JobStatus::Done(Some(p))) => Some(Track { path: p, title: r.title.clone(), video: !r.audio }),
             _ => None,
         })
         .collect();
@@ -340,6 +342,8 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
     let (s_over, s_over_tip) = (t("lblMainOverwrite"), t("tipMainOverwrite"));
     let (s_skip, s_replace) = (t("lblMainOverwriteSkip"), t("lblMainOverwriteReplace"));
     let s_show = t("tipMainShowFile");
+    let s_open_video = t("tipMainOpenIn").replace("{app}", converters::VIDEO.name);
+    let s_open_audio = t("tipMainOpenIn").replace("{app}", converters::AUDIO.name);
     let s_retry = t("tipMainRetry");
     let s_play = t("tipMainPlay");
     let (s_parallel, s_download, s_stop, s_open) = (t("tipMainParallel"), t("tipMainDownload"), t("tipMainStop"), t("tipMainOpenFolder"));
@@ -353,19 +357,8 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                 if let Some(popup) = popup {
                     ToolPopup { lang: lang.clone(), popup, on_close: move |_| dismissed.set(true) }
                 }
-                div { class: "uis-tab-set",
-                    button {
-                        class: if on_audio { "uis-tab" } else { "uis-tab active" },
-                        onclick: move |_| audio_list.set(false),
-                        Icon { width: 14, height: 14, icon: LdVideo }
-                        "{s_video}"
-                    }
-                    button {
-                        class: if on_audio { "uis-tab active" } else { "uis-tab" },
-                        onclick: move |_| audio_list.set(true),
-                        Icon { width: 14, height: 14, icon: LdMusic }
-                        "{s_audio}"
-                    }
+                if let Some(video) = player.track.read().as_ref().map(|t| t.video) {
+                    PlayerPane { player, queue, lang: lang.clone(), away: video == on_audio }
                 }
                 div { class: "uis-lvw-scroll dl-list",
                     if !have_rows {
@@ -437,13 +430,32 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                                             title: "{s_play}",
                                             "aria-label": "{s_play}",
                                             onclick: {
-                                                let track = Track { path: file.clone(), title: row.title.clone() };
+                                                let track = Track { path: file.clone(), title: row.title.clone(), video: !is_audio };
                                                 move |_| player.play(track.clone())
                                             },
                                             if player.is_sounding(&file) {
                                                 Icon { width: 14, height: 14, icon: LdPause }
                                             } else {
                                                 Icon { width: 14, height: 14, icon: LdPlay }
+                                            }
+                                        }
+                                        if let Some(program) = if is_audio { audio_converter.clone() } else { video_converter.clone() } {
+                                            {
+                                                let tip = if is_audio { s_open_audio.clone() } else { s_open_video.clone() };
+                                                let file = file.clone();
+                                                rsx! {
+                                                    button {
+                                                        class: "uis-btn ico subtle",
+                                                        title: "{tip}",
+                                                        "aria-label": "{tip}",
+                                                        onclick: move |_| converters::open(&program, &file),
+                                                        if is_audio {
+                                                            Icon { width: 14, height: 14, icon: LdAudioLines }
+                                                        } else {
+                                                            Icon { width: 14, height: 14, icon: LdClapperboard }
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                         button {
@@ -643,12 +655,7 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
             }
         }
         div { class: "uis-barh-footer",
-            if player.track.read().is_some() {
-                PlayerBar { player, queue, lang: lang.clone() }
-                span { class: "dl-status dl-status-side", "{status_text}" }
-            } else {
-                span { class: "dl-status", "{status_text}" }
-            }
+            span { class: "dl-status", "{status_text}" }
         }
     }
 }

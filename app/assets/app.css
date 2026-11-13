@@ -22,6 +22,22 @@ body {
 .dl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .dl-panel { width: 236px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-left: 1px solid var(--uis-border); overflow-y: auto; }
 .dl-list { padding: 8px 12px; flex: 1; min-height: 0; }
+/* The player: a pane above the list, laid out as the preview of the converters is (title, picture, times, position, one bar of buttons). */
+.dl-player { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 6px; border-bottom: 1px solid var(--uis-border); min-height: 0; }
+.dl-player-video { flex: 0 0 55%; min-height: 260px; }
+/* The list shown is not the file's own: the player waits out of sight. */
+.dl-player.dl-player-away { display: none; }
+.dl-player-info { display: flex; align-items: center; gap: 8px; min-height: 16px; }
+.dl-player-title { font-size: 12px; font-weight: 600; color: var(--uis-text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-video { flex: 1; min-height: 120px; display: flex; align-items: center; justify-content: center; background: #000; border-radius: 6px; overflow: hidden; }
+.dl-video-picture { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.dl-player-times { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.dl-player-now { color: var(--uis-danger); }
+.dl-player-length { color: var(--uis-accent); }
+.dl-seek { width: 100%; }
+.dl-player-bar { display: flex; align-items: center; gap: 4px; }
+.dl-player-vol-icon { display: flex; align-items: center; margin-left: 4px; color: var(--uis-text-dim); }
+.dl-vol { width: 80px; margin: 0 4px; }
 .dl-empty { color: var(--uis-text-mute); margin: 16px 4px; }
 .dl-row { cursor: default; }
 .dl-cover { width: 64px; height: 40px; justify-content: center; color: var(--uis-text-mute); background: var(--uis-bg-row); border-radius: 6px; overflow: hidden; }
@@ -32,13 +48,7 @@ body {
 .dl-error { color: var(--uis-danger); white-space: normal; user-select: text; }
 .dl-bar { height: 4px; margin-top: 6px; background: var(--uis-bg-row); border-radius: 2px; overflow: hidden; }
 .dl-bar-fill { height: 100%; background: var(--uis-accent); }
-.dl-player-title { font-size: 12px; font-weight: 600; color: var(--uis-text); flex-shrink: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dl-player-time { flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.dl-seek { flex: 1; min-width: 60px; height: 4px; accent-color: var(--uis-accent); cursor: pointer; }
-.dl-vol { width: 72px; height: 4px; flex-shrink: 0; accent-color: var(--uis-accent); cursor: pointer; }
 .dl-status { font-size: 12px; color: var(--uis-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-/* With the player in the footer the status word gives way to it. */
-.dl-status-side { max-width: 220px; flex-shrink: 1; }
 
 /* The preset editor (Settings > Presets): the list on the left, the options of the selected preset on the right. */
 .manager { display: flex; gap: 24px; align-items: flex-start; height: 100%; min-height: 0; }

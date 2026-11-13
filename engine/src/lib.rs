@@ -12,6 +12,7 @@ pub mod ffmpeg;
 pub mod ffmpeg_install;
 pub mod log;
 pub mod preset;
+pub mod picture;
 pub mod player;
 pub mod probe;
 pub mod runner;

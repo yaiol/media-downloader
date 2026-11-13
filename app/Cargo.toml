@@ -1,8 +1,8 @@
 [package]
 name = "media-downloader"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
-description = "Download video and audio from links, in a batch"
+description = "Download video and audio from links, a whole playlist at once, with nothing to install."
 
 # Identity that is not a standard Cargo field. build.rs turns it into compile-time constants, so
 # the source carries no literal name (the analogue of reading package.json's productName).

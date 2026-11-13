@@ -4,6 +4,7 @@
 //   translate, sort and audit every language with the i18n scripts. Never paste translations by hand.
 
 mod catalog;
+mod converters;
 mod downloads;
 mod i18n;
 mod icons;
@@ -16,20 +17,21 @@ mod tools;
 mod window_accent;
 mod window_menu;
 
-use catalog::{UisAppHeader, UisAppTab, UisBarWindow, UisIcoGithub, UisNewsLoader, UisStgView, news};
+use catalog::{UisAppHeader, UisAppTab, UisBarWindow, UisIcoGithub, UisBtnNews, UisBtnUpdate, UisNewsLoader, UisStgView, news};
 use dioxus::prelude::*;
 use downloads::Downloads;
 use dioxus_free_icons::{
     Icon,
-    icons::ld_icons::{LdCircleHelp, LdFolder, LdFolderOpen, LdPlus, LdSettings, LdVideo, LdVolume2},
+    icons::ld_icons::{LdCircleHelp, LdFolder, LdFolderOpen, LdMusic, LdPlus, LdSettings, LdVideo, LdVolume2},
 };
 
-const CSS: [&str; 6] = [
+const CSS: [&str; 7] = [
     include_str!("../assets/uis-colors.css"),
     include_str!("../assets/uis-app.css"),
     include_str!("../assets/uis-bar-window.css"),
     include_str!("../assets/uis-listview.css"),
     include_str!("../assets/uis-fld-labelled.css"),
+    include_str!("../assets/uis-sld.css"),
     include_str!("../assets/app.css"),
 ];
 
@@ -127,7 +129,7 @@ fn App() -> Element {
     let mut settings_open = use_signal(|| false);
     let mut add_clipboard = use_signal(|| 0u32);
     // Which of the two lists the window shows: false = video, true = audio. A link is added to the one shown.
-    let audio_list = use_signal(|| false);
+    let mut audio_list = use_signal(|| false);
     let mut clear_request = use_signal(|| 0u32);
     let can_clear = use_signal(|| false);
     // Which Settings tab is showing (and the one it opens on).
@@ -200,6 +202,7 @@ fn App() -> Element {
     let t = |key: &str| i18n::t(&code, key);
     let tip_help = t("tipHdrHelp");
     let tip_add = t("tipMainAdd");
+    let (tip_video, tip_audio) = (t("lblMainVideo"), t("lblWorkAudio"));
     let tip_clear = t("tipMainClear");
     let tip_settings = t("tipHdrSettings");
     let (tip_minimize, tip_maximize, tip_restore, tip_close) = (t("tipWinMinimize"), t("tipWinMaximize"), t("tipWinRestore"), t("tipWinClose"));
@@ -267,9 +270,38 @@ fn App() -> Element {
                     },
                     UisIcoGithub {}
                 }
+                // A newer version is out: the reminder, drawn only then; a click reopens the update card.
+                UisBtnUpdate { lang: lang() }
+                // yaiol has news for this app: the second reminder, drawn only then; a click reopens the announcements.
+                UisBtnNews { lang: lang() }
             }
             // The name and the version are in the window bar, so the header holds the work buttons only.
             UisAppHeader { app_name: APP_NAME, app_version: version.clone(), bare: true,
+                // The two lists, as the converters have their two views: video, then audio.
+                div { class: "uis-barh-grp",
+                    button {
+                        class: if audio_list() { "uis-btn ico" } else { "uis-btn ico active" },
+                        title: "{tip_video}",
+                        "aria-label": "{tip_video}",
+                        "aria-pressed": "{!audio_list()}",
+                        onclick: move |_| {
+                            settings_open.set(false);
+                            audio_list.set(false);
+                        },
+                        Icon { width: 14, height: 14, icon: LdVideo }
+                    }
+                    button {
+                        class: if audio_list() { "uis-btn ico active" } else { "uis-btn ico" },
+                        title: "{tip_audio}",
+                        "aria-label": "{tip_audio}",
+                        "aria-pressed": "{audio_list()}",
+                        onclick: move |_| {
+                            settings_open.set(false);
+                            audio_list.set(true);
+                        },
+                        Icon { width: 14, height: 14, icon: LdMusic }
+                    }
+                }
                 div { class: "uis-barh-grp",
                     button {
                         class: "uis-btn ico",
