@@ -1,6 +1,6 @@
 [package]
 name = "media-downloader"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 description = "Download video and audio from links, a whole playlist at once, with nothing to install."
 

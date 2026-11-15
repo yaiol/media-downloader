@@ -6,6 +6,7 @@
 //! everything else goes through the t() lookup with a literal key at the call site.
 
 use crate::{
+    catalog::UisNum,
     i18n,
     settings::{self, Settings},
 };
@@ -17,6 +18,7 @@ use dioxus_free_icons::{
 use engine::{
     destination::{self, Destination},
     preset::{self, AudioFormat, Container, Mode, Preset},
+    traffic::{self, Traffic},
 };
 
 /// The keys of the Settings tabs of the video presets and of the audio presets (as in Video Studio).
@@ -268,6 +270,70 @@ fn edit_destination(mut settings: Signal<Settings>, id: &str, edit: impl FnOnce(
     }
 }
 
+/// Which of a destination's two patterns a box holds.
+#[derive(Clone, Copy, PartialEq)]
+enum Pattern {
+    File,
+    Set,
+}
+
+/// The id of a pattern's text box, so a click on a name can ask the box where its caret is.
+fn pattern_box_id(which: Pattern, id: &str) -> String {
+    match which {
+        Pattern::File => format!("dst-file-{id}"),
+        Pattern::Set => format!("dst-set-{id}"),
+    }
+}
+
+/// A click on a name puts it in the pattern AT THE CARET (over the selection, when there is one), not at the end:
+/// the box is asked where its caret is (a box keeps it while the button has the focus), the name is spliced in, and the
+/// caret goes back after it, in the box.
+fn add_token(settings: Signal<Settings>, which: Pattern, id: String, token: &'static str) {
+    spawn(async move {
+        let box_id = pattern_box_id(which, &id);
+        let mut ev = document::eval(&format!(
+            "const b = document.getElementById('{box_id}'); dioxus.send(b ? [b.selectionStart, b.selectionEnd] : [-1, -1]);"
+        ));
+        let (from, to) = match ev.recv::<[i64; 2]>().await {
+            Ok([a, b]) if a >= 0 && b >= 0 => (a as usize, b as usize),
+            _ => (usize::MAX, usize::MAX),
+        };
+        let current = settings.read().destinations.iter().find(|d| d.id == id).map(|d| match which {
+            Pattern::File => d.pattern.clone(),
+            Pattern::Set => d.set_pattern.clone(),
+        });
+        let Some(text) = current else { return };
+        let (next, caret) = with_token(&text, from, to, token);
+        edit_destination(settings, &id, |d| match which {
+            Pattern::File => d.pattern = next,
+            Pattern::Set => d.set_pattern = next,
+        });
+        // After the page has taken the new text: back into the box, the caret after the name just placed.
+        let _ = document::eval(&format!(
+            "setTimeout(() => {{ const b = document.getElementById('{box_id}'); if (b) {{ b.focus(); b.setSelectionRange({caret}, {caret}); }} }}, 30);"
+        ));
+    });
+}
+
+/// `text` with `{token}` put over the span from..to (positions in UTF-16 units, as a box reports them; either one past
+/// the end, or `usize::MAX`, = the end), and the caret position (UTF-16 units) just after the name.
+fn with_token(text: &str, from: usize, to: usize, token: &str) -> (String, usize) {
+    let byte = |pos: usize| {
+        let mut units = 0usize;
+        for (i, ch) in text.char_indices() {
+            if units >= pos {
+                return i;
+            }
+            units += ch.len_utf16();
+        }
+        text.len()
+    };
+    let (a, b) = (byte(from.min(to)), byte(from.max(to)));
+    let name = format!("{{{token}}}");
+    let caret = text[..a].encode_utf16().count() + name.encode_utf16().count();
+    (format!("{}{}{}", &text[..a], name, &text[b..]), caret)
+}
+
 /// `audio`: which list the window shows. A destination clicked here becomes the pick of that list.
 #[component]
 pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
@@ -289,7 +355,7 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
     let s_name = t("lblDstName");
     let s_folder = t("lblDstFolder");
     let s_browse = t("btnDstBrowse");
-    let s_pattern = t("lblDstPattern");
+    let s_pattern = t("lblDstFileName");
     let s_hint = t("msgDstNameHint");
     let s_preview = t("lblDstPreview");
     let s_downloads = t("msgDstDownloadsFolder");
@@ -310,7 +376,7 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
         destination::preview(&current.pattern)
     );
     let id_for_set_pattern = cur_id.clone();
-    let s_set_pattern = t("lblDstSetPattern");
+    let s_set_pattern = t("lblDstSetName");
     let s_set_pattern_hint = t("msgDstSetPatternHint");
 
     rsx! {
@@ -453,6 +519,7 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
                 div { class: "uis-fld-labelled",
                     label { class: "uis-fld-labelled-label", "{s_pattern}" }
                     input {
+                        id: "{pattern_box_id(Pattern::File, &cur_id)}",
                         class: "uis-txt",
                         value: "{current.pattern}",
                         oninput: move |e| {
@@ -464,15 +531,11 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
                         for token in destination::TOKENS {
                             {
                                 let id = cur_id.clone();
-                                let base = current.pattern.clone();
                                 rsx! {
                                     button {
                                         key: "{token}",
                                         class: "uis-chp",
-                                        onclick: move |_| {
-                                            let next = format!("{base}{{{token}}}");
-                                            edit_destination(settings, &id, |d| d.pattern = next);
-                                        },
+                                        onclick: move |_| add_token(settings, Pattern::File, id.clone(), token),
                                         "{token}"
                                     }
                                 }
@@ -500,6 +563,7 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
                     div { class: "uis-fld-labelled",
                         label { class: "uis-fld-labelled-label", "{s_set_pattern}" }
                         input {
+                            id: "{pattern_box_id(Pattern::Set, &cur_id)}",
                             class: "uis-txt",
                             value: "{current.set_pattern}",
                             oninput: move |e| {
@@ -511,15 +575,11 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
                             for token in destination::SET_TOKENS {
                                 {
                                     let id = cur_id.clone();
-                                    let base = current.set_pattern.clone();
                                     rsx! {
                                         button {
                                             key: "{token}",
                                             class: "uis-chp",
-                                            onclick: move |_| {
-                                                let next = format!("{base}{{{token}}}");
-                                                edit_destination(settings, &id, |d| d.set_pattern = next);
-                                            },
+                                            onclick: move |_| add_token(settings, Pattern::Set, id.clone(), token),
                                             "{token}"
                                         }
                                     }
@@ -532,6 +592,246 @@ pub fn DestinationEditor(settings: Signal<Settings>, audio: bool) -> Element {
                 div { class: "uis-fld-labelled",
                     label { class: "uis-fld-labelled-label", "{s_preview}" }
                     div { class: "manager-example", "{example}" }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_token;
+
+    #[test]
+    fn a_name_goes_in_at_the_caret_not_at_the_end() {
+        assert_eq!(with_token("{title}", 0, 0, "track"), ("{track}{title}".to_owned(), 7));
+        assert_eq!(with_token("{track}-{title}", 7, 7, "id"), ("{track}{id}-{title}".to_owned(), 11));
+        assert_eq!(with_token("{track}-{title}", 15, 15, "id"), ("{track}-{title}{id}".to_owned(), 19));
+    }
+
+    #[test]
+    fn a_selection_is_replaced_and_a_caret_past_the_end_means_the_end() {
+        assert_eq!(with_token("{track}-{title}", 7, 8, "id"), ("{track}{id}{title}".to_owned(), 11));
+        assert_eq!(with_token("{title}", 4, 2, "id"), ("{t{id}le}".to_owned(), 6));
+        assert_eq!(with_token("{title}", usize::MAX, usize::MAX, "id"), ("{title}{id}".to_owned(), 11));
+        assert_eq!(with_token("", 0, 0, "id"), ("{id}".to_owned(), 4));
+    }
+
+    #[test]
+    fn positions_are_utf16_units_as_the_box_reports_them() {
+        // "é" is one unit, "𝄞" (outside the BMP) is two: a caret after both is at 3.
+        assert_eq!(with_token("é𝄞x", 3, 3, "id"), ("é𝄞{id}x".to_owned(), 7));
+    }
+}
+
+/// The key of the Settings tab of the traffic sets.
+pub const TRAFFIC: &str = "traffic";
+
+/// The limit a set gets when "Unlimited" is unticked: a number to start from, in KB per second.
+const FIRST_LIMIT_KBPS: u32 = 500;
+
+fn edit_traffic(mut settings: Signal<Settings>, id: &str, edit: impl FnOnce(&mut Traffic)) {
+    let mut s = settings.write();
+    if let Some(t) = s.traffics.iter_mut().find(|t| t.id == id) {
+        edit(t);
+    }
+}
+
+/// What a set says under its name in the list: its limit and how many download at once.
+fn traffic_summary(set: &Traffic, unlimited: &str, at_once: &str) -> String {
+    let limit = match set.limit_kbps {
+        Some(k) => format!("{k} KB/s"),
+        None => unlimited.to_owned(),
+    };
+    format!("{limit} · {}", at_once.replace("{n}", &set.parallel.to_string()))
+}
+
+/// Settings > Traffic limits: the sets the panel's Traffic drop-down offers, each a limit for all the downloads together and a count of
+/// downloads at once. A list kept like the destinations: new, duplicate, delete, drag to reorder; a click picks the set in the panel too.
+#[component]
+pub fn TrafficEditor(settings: Signal<Settings>) -> Element {
+    let mut selected = use_signal(|| settings.read().traffic_id.clone());
+    let mut dragging = use_signal(|| Option::<String>::None);
+
+    let lang = settings.read().lang.clone();
+    let t = |key: &str| i18n::t(&lang, key);
+
+    let sets = settings.read().traffics.clone();
+    let current = sets.iter().find(|x| x.id == selected()).unwrap_or(&sets[0]).clone();
+    let cur_id = current.id.clone();
+    let can_delete = sets.len() > 1;
+    let unlimited = current.limit_kbps.is_none();
+
+    let s_new = t("btnMngNew");
+    let s_dup = t("btnMngDuplicate");
+    let s_del = t("btnMngDelete");
+    let s_reorder = t("msgMngReorderHint");
+    let s_name = t("lblTrfName");
+    let s_limit = t("lblTrfLimit");
+    let s_unlimited = t("lblTrfUnlimited");
+    let s_limit_hint = t("msgTrfLimitHint");
+    let s_parallel = t("lblTrfParallel");
+    let s_at_once = t("msgTrfAtOnce");
+
+    let id_for_name = cur_id.clone();
+    let id_for_unlimited = cur_id.clone();
+    let id_for_limit = cur_id.clone();
+    let id_for_parallel = cur_id.clone();
+    let id_for_dup = cur_id.clone();
+    let id_for_del = cur_id.clone();
+
+    rsx! {
+        div { class: "manager",
+            div { class: "manager-list uis-lvw-reorder",
+                div { class: "manager-actions",
+                    button {
+                        class: "uis-btn ico",
+                        title: "{s_new}",
+                        "aria-label": "{s_new}",
+                        onclick: move |_| {
+                            let set = Traffic::new(&s_new);
+                            selected.set(set.id.clone());
+                            settings.write().traffics.push(set);
+                        },
+                        Icon { width: 14, height: 14, icon: LdPlus }
+                    }
+                    button {
+                        class: "uis-btn ico",
+                        title: "{s_dup}",
+                        "aria-label": "{s_dup}",
+                        onclick: move |_| {
+                            let src = settings.read().traffics.iter().find(|x| x.id == id_for_dup).cloned();
+                            if let Some(mut set) = src {
+                                set.id = preset::new_id();
+                                set.name = format!("{} 2", set.name);
+                                selected.set(set.id.clone());
+                                settings.write().traffics.push(set);
+                            }
+                        },
+                        Icon { width: 14, height: 14, icon: LdCopy }
+                    }
+                    button {
+                        class: "uis-btn ico",
+                        title: "{s_del}",
+                        "aria-label": "{s_del}",
+                        disabled: !can_delete,
+                        onclick: move |_| {
+                            settings.write().traffics.retain(|x| x.id != id_for_del);
+                            let first = settings.read().traffics[0].id.clone();
+                            selected.set(first.clone());
+                            // The one picked in the panel may be the one just deleted.
+                            if !settings.read().traffics.iter().any(|x| x.id == settings.read().traffic_id) {
+                                settings.write().traffic_id = first;
+                            }
+                        },
+                        Icon { width: 14, height: 14, icon: LdTrash2 }
+                    }
+                }
+                div { class: "uis-lvw-scroll",
+                    for set in sets.iter() {
+                        {
+                            let id = set.id.clone();
+                            let id_down = set.id.clone();
+                            let id_over = set.id.clone();
+                            let active = set.id == cur_id;
+                            let moving = dragging().as_deref() == Some(set.id.as_str());
+                            let summary = traffic_summary(set, &s_unlimited, &s_at_once);
+                            rsx! {
+                                button {
+                                    key: "{set.id}",
+                                    class: match (active, moving) {
+                                        (_, true) => "uis-lvw-item reordering",
+                                        (true, _) => "uis-lvw-item active",
+                                        _ => "uis-lvw-item",
+                                    },
+                                    onpointerdown: move |e| {
+                                        if e.trigger_button() == Some(MouseButton::Primary) {
+                                            dragging.set(Some(id_down.clone()));
+                                        }
+                                    },
+                                    onpointerenter: move |e| {
+                                        let Some(from) = dragging() else { return };
+                                        if !e.held_buttons().contains(MouseButton::Primary) {
+                                            dragging.set(None);
+                                            return;
+                                        }
+                                        reorder(&mut settings.write().traffics, |x| x.id.as_str(), &from, &id_over);
+                                    },
+                                    onpointerup: move |_| dragging.set(None),
+                                    onclick: move |_| {
+                                        selected.set(id.clone());
+                                        settings.write().traffic_id = id.clone();
+                                    },
+                                    div { class: "uis-lvw-item-body",
+                                        div { class: "uis-lvw-item-name", "{set.name}" }
+                                        div { class: "uis-lvw-item-sub", "{summary}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                p { class: "uis-hnt", "{s_reorder}" }
+            }
+            div { class: "manager-form",
+                div { class: "uis-fld-labelled",
+                    label { class: "uis-fld-labelled-label", "{s_name}" }
+                    input {
+                        class: "uis-txt",
+                        value: "{current.name}",
+                        oninput: move |e| {
+                            let v = e.value();
+                            edit_traffic(settings, &id_for_name, |x| x.name = v);
+                        },
+                    }
+                }
+                div { class: "uis-fld-labelled",
+                    label { class: "uis-fld-labelled-label", "{s_limit}" }
+                    div { class: "manager-row",
+                        label { class: "uis-chk-lbl",
+                            input {
+                                r#type: "checkbox",
+                                class: "uis-chk-box",
+                                checked: unlimited,
+                                onchange: move |e| {
+                                    let on = e.checked();
+                                    edit_traffic(settings, &id_for_unlimited, |x| x.limit_kbps = if on { None } else { Some(FIRST_LIMIT_KBPS) });
+                                },
+                            }
+                            "{s_unlimited}"
+                        }
+                        UisNum {
+                            value: current.limit_kbps.map(f64::from),
+                            min: Some(1.0),
+                            max: Some(1_000_000.0),
+                            step: 50.0,
+                            decimals: Some(0),
+                            width: "96px".to_owned(),
+                            disabled: unlimited,
+                            on_change: move |v: Option<f64>| {
+                                if let Some(v) = v {
+                                    edit_traffic(settings, &id_for_limit, |x| x.limit_kbps = Some(v.round().max(1.0) as u32));
+                                }
+                            },
+                        }
+                        span { "KB/s" }
+                    }
+                    p { class: "uis-hnt", "{s_limit_hint}" }
+                }
+                div { class: "uis-fld-labelled",
+                    label { class: "uis-fld-labelled-label", "{s_parallel}" }
+                    select {
+                        class: "uis-ddn-std",
+                        value: "{current.parallel}",
+                        onchange: move |e| {
+                            if let Ok(n) = e.value().parse::<u32>() {
+                                edit_traffic(settings, &id_for_parallel, |x| x.parallel = n.clamp(1, traffic::MAX_PARALLEL));
+                            }
+                        },
+                        for n in 1..=traffic::MAX_PARALLEL {
+                            option { key: "{n}", value: "{n}", selected: n == current.parallel, "{n}" }
+                        }
+                    }
                 }
             }
         }

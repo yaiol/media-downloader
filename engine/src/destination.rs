@@ -10,7 +10,7 @@ use crate::probe::SetInfo;
 pub const PICK_ID: &str = "pick";
 
 /// What a pattern may name, in the order the editor offers them.
-pub const TOKENS: [&str; 6] = ["title", "uploader", "channel", "id", "year", "date"];
+pub const TOKENS: [&str; 7] = ["title", "track", "uploader", "channel", "id", "year", "date"];
 
 /// The pattern a new destination starts with.
 pub const DEFAULT_PATTERN: &str = "{title} [{id}]";
@@ -70,9 +70,10 @@ impl Destination {
         }
     }
 
-    /// The yt-dlp output template of the pattern, extension included.
-    pub fn template(&self) -> String {
-        template(&self.pattern)
+    /// The yt-dlp output template of the pattern, extension included, for a file that is `track` (its number, and how many there are)
+    /// of a set; None for a file that has no number.
+    pub fn template(&self, track: Option<(u32, u32)>) -> String {
+        template_for(&self.pattern, track)
     }
 }
 
@@ -128,18 +129,41 @@ fn field(token: &str) -> Option<&'static str> {
 /// A pattern as a yt-dlp output template. A literal `%` is doubled, `\` is a folder separator, a `..` or empty step is dropped (a pattern
 /// never leaves its folder), and a name with nothing in it falls back to the default pattern.
 pub fn template(pattern: &str) -> String {
+    template_for(pattern, None)
+}
+
+/// The same, for a file that is `track` of a set. `{track}` is the one name yt-dlp is not asked for: each file is downloaded by itself, so
+/// only the app knows its place in the set. It is written here, with as many digits as the set's last number has (two at least).
+pub fn template_for(pattern: &str, track: Option<(u32, u32)>) -> String {
     let mut steps: Vec<String> = Vec::new();
     for step in pattern.replace('\\', "/").split('/') {
-        let step = step.trim();
+        let step = numbered(step.trim(), track);
         if step.is_empty() || step == "." || step == ".." || step.ends_with(':') && step.len() == 2 {
             continue;
         }
-        steps.push(render_step(step));
+        steps.push(render_step(&step));
     }
     if steps.is_empty() {
         return template(DEFAULT_PATTERN);
     }
     format!("{}.%(ext)s", steps.join("/"))
+}
+
+/// One step of a pattern with `{track}` filled in. A file with no number leaves nothing, and the dashes, dots and spaces the number was
+/// joined by are dropped with it, so `{track} - {title}` of a single video is just the title.
+fn numbered(step: &str, track: Option<(u32, u32)>) -> String {
+    const WORD: &str = "{track}";
+    if !step.contains(WORD) {
+        return step.to_owned();
+    }
+    match track {
+        Some((n, of)) => step.replace(WORD, &format!("{n:0w$}", w = of.to_string().len().max(2))),
+        None => {
+            let loose = |c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace();
+            let parts: Vec<&str> = step.split(WORD).map(|p| p.trim_matches(loose)).filter(|p| !p.is_empty()).collect();
+            parts.join(" ")
+        }
+    }
 }
 
 fn render_step(step: &str) -> String {
@@ -167,6 +191,7 @@ fn render_step(step: &str) -> String {
 pub fn preview(pattern: &str) -> String {
     let sample = |token: &str| match token {
         "title" => "A good song",
+        "track" => "03",
         "uploader" | "channel" => "Some Channel",
         "id" => "dQw4w9WgXcQ",
         "year" => "2024",
@@ -231,6 +256,16 @@ mod tests {
     fn a_percent_is_a_literal_and_an_unknown_token_is_left_as_typed() {
         assert_eq!(template("100% {title}"), "100%% %(title).150B.%(ext)s");
         assert_eq!(template("{nope} {id}"), "{nope} %(id)s.%(ext)s");
+        // the track number is the app's: two digits at least, as many as the set's last number has
+        assert_eq!(template_for("{track} - {title}", Some((3, 12))), "03 - %(title).150B.%(ext)s");
+        assert_eq!(template_for("{track} {title}", Some((7, 120))), "007 %(title).150B.%(ext)s");
+        assert_eq!(template_for("{track}/{title}", Some((3, 12))), "03/%(title).150B.%(ext)s");
+        // a file with no number leaves nothing of it, nor of what joined it
+        assert_eq!(template_for("{track} - {title}", None), "%(title).150B.%(ext)s");
+        assert_eq!(template_for("{title} - {track} [{id}]", None), "%(title).150B [%(id)s].%(ext)s");
+        assert_eq!(template_for("{track}/{title}", None), "%(title).150B.%(ext)s");
+        assert_eq!(template_for("{track}", None), template(DEFAULT_PATTERN));
+        assert_eq!(preview("{track} - {title}"), "03 - A good song.mp4");
         assert_eq!(template("a { b"), "a { b.%(ext)s");
     }
 

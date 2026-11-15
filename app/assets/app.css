@@ -19,28 +19,19 @@ body {
 /* ─── The downloads: the links list, the add bar and the options panel ──────────────────────────
    Layout only. Every colour is a token and every control is the catalog's own class. */
 .dl-body { flex: 1; min-height: 0; display: flex; }
-.dl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-x: clip; }
 .dl-panel { width: 236px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px; border-left: 1px solid var(--uis-border); overflow-y: auto; }
 .dl-list { padding: 8px 12px; flex: 1; min-height: 0; }
-/* The player: a pane above the list, laid out as the preview of the converters is (title, picture, times, position, one bar of buttons). */
-.dl-player { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 6px; border-bottom: 1px solid var(--uis-border); min-height: 0; }
+/* The box of the player, above the list: how tall it is, its padding and its border. What is in it is the catalog's UisPlayer. */
+.dl-player { flex: 0 0 auto; display: flex; flex-direction: column; padding: 10px 12px 6px; border-bottom: 1px solid var(--uis-border); min-height: 0; }
 .dl-player-video { flex: 0 0 55%; min-height: 260px; }
 /* The list shown is not the file's own: the player waits out of sight. */
 .dl-player.dl-player-away { display: none; }
-.dl-player-info { display: flex; align-items: center; gap: 8px; min-height: 16px; }
-.dl-player-title { font-size: 12px; font-weight: 600; color: var(--uis-text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dl-video { flex: 1; min-height: 120px; display: flex; align-items: center; justify-content: center; background: #000; border-radius: 6px; overflow: hidden; }
-.dl-video-picture { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
-.dl-player-times { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
-.dl-player-now { color: var(--uis-danger); }
-.dl-player-length { color: var(--uis-accent); }
-.dl-seek { width: 100%; }
-.dl-player-bar { display: flex; align-items: center; gap: 4px; }
-.dl-player-vol-icon { display: flex; align-items: center; margin-left: 4px; color: var(--uis-text-dim); }
-.dl-vol { width: 80px; margin: 0 4px; }
 .dl-empty { color: var(--uis-text-mute); margin: 16px 4px; }
 .dl-row { cursor: default; }
 .dl-cover { width: 64px; height: 40px; justify-content: center; color: var(--uis-text-mute); background: var(--uis-bg-row); border-radius: 6px; overflow: hidden; }
+/* A converter's own icon on the button that opens a file in it, at the size of the other row icons. */
+.dl-app-icon { width: 14px; height: 14px; display: block; }
 .dl-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 .dl-state-ok  { color: var(--uis-ok); }
 .dl-state-err { color: var(--uis-danger); }

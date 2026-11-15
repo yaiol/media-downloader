@@ -32,8 +32,10 @@ pub struct Settings {
     pub audio_destination_id: String,
     /// A file that is already there is replaced (otherwise it is left alone).
     pub replace: bool,
-    /// How many download at once.
-    pub parallel: u32,
+    /// The traffic sets (a speed limit for all the downloads together, and how many run at once), in the order the user keeps them.
+    pub traffics: Vec<engine::traffic::Traffic>,
+    /// The traffic set picked in the panel (an id of `traffics`).
+    pub traffic_id: String,
     /// When a video needs a signed-in visitor, borrow the login of a browser on this PC (see `engine::browsers`).
     pub login: bool,
     /// A cookies.txt the user exported from a signed-in browser; empty = none. Tried before the browsers (see `engine::browsers::Signin`).
@@ -50,7 +52,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lang: "en".to_owned(), theme: "light".to_owned(), presets: engine::preset::seeded(false), preset_id: "video-best".to_owned(), audios: engine::preset::seeded(true), audio_id: "audio-mp3".to_owned(), destinations: vec![engine::destination::Destination::seeded()], destination_id: "default-downloads".to_owned(), audio_destination_id: "default-downloads".to_owned(), replace: false, parallel: 2, login: true, cookies_file: String::new(), tag: true, picked: None, audio_picked: None }
+        Self { lang: "en".to_owned(), theme: "light".to_owned(), presets: engine::preset::seeded(false), preset_id: "video-best".to_owned(), audios: engine::preset::seeded(true), audio_id: "audio-mp3".to_owned(), destinations: vec![engine::destination::Destination::seeded()], destination_id: "default-downloads".to_owned(), audio_destination_id: "default-downloads".to_owned(), replace: false, traffics: engine::traffic::seeded(), traffic_id: "traffic-unlimited".to_owned(), login: true, cookies_file: String::new(), tag: true, picked: None, audio_picked: None }
     }
 }
 
@@ -100,6 +102,12 @@ impl Settings {
         one.id = if audio { "picked-once-audio" } else { "picked-once" }.to_owned();
         self.set_destination(audio, one.id.clone());
         if audio { self.audio_picked = Some(one) } else { self.picked = Some(one) }
+    }
+
+    /// The traffic set picked in the panel, or the first one when the saved id is no longer in the list.
+    pub fn traffic(&self) -> engine::traffic::Traffic {
+        let list = engine::traffic::repaired(self.traffics.clone());
+        list.iter().find(|t| t.id == self.traffic_id).cloned().unwrap_or_else(|| list[0].clone())
     }
 
     /// The list of presets of a kind.
@@ -156,9 +164,6 @@ pub fn deno_dir() -> Option<PathBuf> {
     Some(shared_bin()?.join("deno"))
 }
 
-/// The most downloads that run at once. A download is bound by the network, not the processor, so this is a courtesy to the sites.
-pub const MAX_PARALLEL: u32 = 6;
-
 /// The app's own folder in the user's app data (a debug build has its own, so a dev run and an installed copy never share state).
 pub fn app_dir() -> Option<PathBuf> {
     let folder = if cfg!(debug_assertions) {
@@ -214,6 +219,15 @@ fn load_from(path: &Path) -> Settings {
         s.audio_destination_id = s.destination_id.clone();
     }
     s.destinations = engine::destination::repaired(std::mem::take(&mut s.destinations));
+    // A file from before the traffic sets held ONE number, how many download at once: it becomes the count of the unlimited set.
+    if !text.contains("\"traffics\"") {
+        if let Some(n) = raw.as_ref().and_then(|v| v.get("parallel")).and_then(|n| n.as_u64()) {
+            if let Some(first) = s.traffics.first_mut() {
+                first.parallel = (n as u32).clamp(1, engine::traffic::MAX_PARALLEL);
+            }
+        }
+    }
+    s.traffics = engine::traffic::repaired(std::mem::take(&mut s.traffics));
     s
 }
 
@@ -237,7 +251,7 @@ mod tests {
     #[test]
     fn round_trips() {
         let p = temp("roundtrip").join("settings.json");
-        let s = Settings { lang: "ar".to_owned(), theme: "dark".to_owned(), presets: engine::preset::seeded(false), preset_id: "video-mp4-720".to_owned(), audios: engine::preset::seeded(true), audio_id: "audio-opus".to_owned(), destinations: vec![engine::destination::Destination::new("Music", r"C:/music")], destination_id: "x".to_owned(), audio_destination_id: "y".to_owned(), replace: true, parallel: 4, login: false, cookies_file: "C:/x/cookies.txt".to_owned(), tag: false, picked: None, audio_picked: None };
+        let s = Settings { lang: "ar".to_owned(), theme: "dark".to_owned(), presets: engine::preset::seeded(false), preset_id: "video-mp4-720".to_owned(), audios: engine::preset::seeded(true), audio_id: "audio-opus".to_owned(), destinations: vec![engine::destination::Destination::new("Music", r"C:/music")], destination_id: "x".to_owned(), audio_destination_id: "y".to_owned(), replace: true, traffics: engine::traffic::seeded(), traffic_id: "traffic-background".to_owned(), login: false, cookies_file: "C:/x/cookies.txt".to_owned(), tag: false, picked: None, audio_picked: None };
         save_to(&p, &s);
         assert!(load_from(&p) == s);
         let _ = fs::remove_dir_all(p.parent().unwrap());
@@ -344,7 +358,20 @@ mod tests {
         fs::write(&p, r#"{ "theme": "dark" }"#).unwrap();
         let s = load_from(&p);
         assert_eq!((s.lang.as_str(), s.theme.as_str()), ("en", "dark"));
-        assert_eq!((s.preset_id.as_str(), s.parallel), ("video-best", 2));
+        assert_eq!((s.preset_id.as_str(), s.traffic().parallel), ("video-best", 2));
+        let _ = fs::remove_file(p);
+    }
+
+    #[test]
+    fn an_older_file_keeps_its_count_in_the_unlimited_set_and_a_saved_list_is_kept() {
+        let p = temp("traffic");
+        fs::write(&p, r#"{ "parallel": 4 }"#).unwrap();
+        let s = load_from(&p);
+        assert_eq!((s.traffic().limit_kbps, s.traffic().parallel), (None, 4));
+        fs::write(&p, r#"{ "parallel": 4, "traffics": [ { "id": "x", "name": "Night", "limit_kbps": 200, "parallel": 1 } ], "traffic_id": "gone" }"#).unwrap();
+        let s = load_from(&p);
+        assert_eq!(s.traffics.len(), 1, "a saved list is not given the seeded sets again");
+        assert_eq!(s.traffic().name, "Night", "an id that is no longer in the list falls back to the first set");
         let _ = fs::remove_file(p);
     }
 }

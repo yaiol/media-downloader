@@ -2,12 +2,11 @@
 //! video, the times, the position, then one bar of buttons: previous, play, stop, next, the volume, close). A row's play icon opens it
 //! on that file; when a file ends the next finished one follows. The pane starts the picture of a video with its sound.
 
-use crate::{i18n, settings};
-use dioxus::prelude::*;
-use dioxus_free_icons::{
-    Icon,
-    icons::ld_icons::{LdPause, LdPlay, LdSkipBack, LdSkipForward, LdSquare, LdVolume1, LdVolume2, LdVolumeX, LdX},
+use crate::{
+    catalog::{UisPlayer, UisPlayerLabels},
+    i18n, settings,
 };
+use dioxus::prelude::*;
 use engine::{
     picture::{self, Channel, Stream},
     player::Sound,
@@ -61,16 +60,15 @@ impl Player {
         self.channel.read().url.clone().ok()
     }
 
+    /// Is this file the one in the player, sounding or paused?
+    pub fn is_open_on(&self, path: &std::path::Path) -> bool {
+        self.track.read().as_ref().is_some_and(|t| t.path == path)
+    }
+
     /// Is this file the one sounding now?
     pub fn is_sounding(&self, path: &std::path::Path) -> bool {
         *self.playing.read() && self.track.read().as_ref().is_some_and(|t| t.path == path)
     }
-}
-
-fn clock(seconds: f64) -> String {
-    let s = seconds.max(0.0) as u64;
-    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
 /// The file after `current` in `queue`, and the one before it.
@@ -89,7 +87,6 @@ pub fn PlayerPane(player: Player, queue: ReadSignal<Vec<Track>>, lang: String, a
     let mut stream = use_signal(|| None::<Stream>);
     let mut length = use_signal(|| 0.0_f64);
     let mut volume = use_signal(|| 1.0_f32);
-    let mut scrub = use_signal(|| None::<f64>);
     // Bumped by a seek, so the sound starts again from the new place.
     let mut seeked = use_signal(|| 0u32);
     let mut failure = use_signal(String::new);
@@ -187,152 +184,73 @@ input: {}", t.path.display()));
     });
 
     let (prev, next) = neighbours(&queue.read(), track.read().as_ref());
-    let (t_play, t_pause, t_stop, t_prev, t_next, t_vol, t_close) =
-        (t("tipMainPlay"), t("tipMainPause"), t("tipMainStop"), t("tipMainPrevious"), t("tipMainNext"), t("tipMainVolume"), t("tipMainPlayerClose"));
+    let labels = UisPlayerLabels {
+        play: t("tipMainPlay"),
+        pause: t("tipMainPause"),
+        stop: t("tipMainStop"),
+        previous: t("tipMainPrevious"),
+        next: t("tipMainNext"),
+        volume: t("tipMainVolume"),
+        close: t("tipMainPlayerClose"),
+    };
     let title = track.read().as_ref().map(|t| t.title.clone()).unwrap_or_default();
-    let shown = scrub().unwrap_or_else(|| position());
-    let len = length();
-    let vol = volume();
-    let sounding = playing();
-    let error = failure();
-    let t_toggle = if sounding { t_pause } else { t_play };
-    let (prev_go, next_go) = (prev.clone(), next.clone());
-
+    let (has_prev, has_next) = (prev.is_some(), next.is_some());
     let picture = player.picture();
+    let box_class = match (away, picture.is_some()) {
+        (true, _) => "dl-player dl-player-away",
+        (false, true) => "dl-player dl-player-video",
+        (false, false) => "dl-player",
+    };
 
+    // The box is the app's (how tall, its padding and border); what is in it is the catalog's player.
     rsx! {
-        div {
-            class: match (away, picture.is_some()) {
-                (true, _) => "dl-player dl-player-away",
-                (false, true) => "dl-player dl-player-video uis-cmp-panel",
-                (false, false) => "dl-player uis-cmp-panel",
-            },
-            div { class: "dl-player-info",
-                span { class: "dl-player-title", title: "{title}", "{title}" }
-                if !error.is_empty() {
-                    span { class: "dl-status dl-error", "{error}" }
-                }
-            }
-            if let Some(url) = &picture {
-                div { class: "dl-video",
-                    img { class: "dl-video-picture", src: "{url}", draggable: false }
-                }
-            }
-            div { class: "dl-player-times",
-                span { class: "dl-player-now", "{clock(shown)}" }
-                span { class: "dl-player-length", "{clock(len)}" }
-            }
-            input {
-                class: "uis-sld dl-seek",
-                r#type: "range",
-                min: "0",
-                max: "{len.max(1.0)}",
-                step: "0.1",
-                value: "{shown}",
-                disabled: len <= 0.0,
-                oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<f64>() {
-                        scrub.set(Some(v));
+        div { class: box_class,
+            UisPlayer {
+                title,
+                error: failure(),
+                picture,
+                position: position(),
+                length: length(),
+                volume: volume(),
+                playing: playing(),
+                has_prev,
+                has_next,
+                labels,
+                on_seek: move |v: f64| {
+                    position.set(v);
+                    seeked += 1;
+                },
+                on_toggle: move |_| {
+                    if let Some(s) = sound.peek().as_ref() {
+                        position.set(s.position());
+                    }
+                    let now = *playing.peek();
+                    playing.set(!now);
+                },
+                on_stop: move |_| {
+                    position.set(0.0);
+                    playing.set(false);
+                },
+                on_prev: move |_| {
+                    if let Some(p) = prev.clone() {
+                        player.go_to(p);
                     }
                 },
-                onchange: move |e| {
-                    if let Ok(v) = e.value().parse::<f64>() {
-                        position.set(v);
-                        seeked += 1;
+                on_next: move |_| {
+                    if let Some(n) = next.clone() {
+                        player.go_to(n);
                     }
-                    scrub.set(None);
                 },
-            }
-            div { class: "dl-player-bar",
-                button {
-                    class: "uis-btn ico",
-                    title: "{t_prev}",
-                    "aria-label": "{t_prev}",
-                    disabled: prev.is_none(),
-                    onclick: move |_| {
-                        if let Some(p) = prev_go.clone() {
-                            player.go_to(p);
-                        }
-                    },
-                    Icon { width: 14, height: 14, icon: LdSkipBack }
-                }
-                button {
-                    class: "uis-btn ico",
-                    title: "{t_toggle}",
-                    "aria-label": "{t_toggle}",
-                    onclick: move |_| {
-                        if let Some(s) = sound.peek().as_ref() {
-                            position.set(s.position());
-                        }
-                        let now = *playing.peek();
-                        playing.set(!now);
-                    },
-                    if sounding {
-                        Icon { width: 14, height: 14, icon: LdPause }
-                    } else {
-                        Icon { width: 14, height: 14, icon: LdPlay }
+                on_volume: move |v: f32| {
+                    volume.set(v);
+                    if let Some(s) = sound.peek().as_ref() {
+                        s.set_volume(v);
                     }
-                }
-                button {
-                    class: "uis-btn ico",
-                    title: "{t_stop}",
-                    "aria-label": "{t_stop}",
-                    onclick: move |_| {
-                        position.set(0.0);
-                        playing.set(false);
-                    },
-                    Icon { width: 14, height: 14, icon: LdSquare }
-                }
-                button {
-                    class: "uis-btn ico",
-                    title: "{t_next}",
-                    "aria-label": "{t_next}",
-                    disabled: next.is_none(),
-                    onclick: move |_| {
-                        if let Some(n) = next_go.clone() {
-                            player.go_to(n);
-                        }
-                    },
-                    Icon { width: 14, height: 14, icon: LdSkipForward }
-                }
-                span { class: "dl-player-vol-icon",
-                    if vol <= 0.0 {
-                        Icon { width: 14, height: 14, icon: LdVolumeX }
-                    } else if vol < 0.5 {
-                        Icon { width: 14, height: 14, icon: LdVolume1 }
-                    } else {
-                        Icon { width: 14, height: 14, icon: LdVolume2 }
-                    }
-                }
-                input {
-                    class: "uis-sld dl-vol",
-                    r#type: "range",
-                    min: "0",
-                    max: "1",
-                    step: "0.02",
-                    value: "{vol}",
-                    title: "{t_vol}",
-                    "aria-label": "{t_vol}",
-                    oninput: move |e| {
-                        if let Ok(v) = e.value().parse::<f32>() {
-                            volume.set(v);
-                            if let Some(s) = sound.peek().as_ref() {
-                                s.set_volume(v);
-                            }
-                        }
-                    },
-                }
-                span { class: "uis-bar-spacer" }
-                button {
-                    class: "uis-btn ico subtle",
-                    title: "{t_close}",
-                    "aria-label": "{t_close}",
-                    onclick: move |_| {
-                        playing.set(false);
-                        track.set(None);
-                    },
-                    Icon { width: 14, height: 14, icon: LdX }
-                }
+                },
+                on_close: move |_| {
+                    playing.set(false);
+                    track.set(None);
+                },
             }
         }
     }

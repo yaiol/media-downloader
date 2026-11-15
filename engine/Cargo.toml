@@ -17,3 +17,7 @@ rodio = { version = "0.23.0", default-features = false, features = ["playback"] 
 sha2 = "0.11.1"
 ureq = "3.4.2"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+
+# A pause freezes yt-dlp's process tree (freeze.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

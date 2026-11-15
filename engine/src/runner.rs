@@ -43,6 +43,9 @@ pub struct Job {
     pub overwrite: Overwrite,
     /// Tag the file (an audio preset only): `None` = leave the tags alone.
     pub tags: Option<Tags>,
+    /// The speed this download may go at, in bytes per second. The caller leaves it `None`: the runner sets it when the download starts,
+    /// from the total it was given (`Runner::set_rate`) shared between the downloads running then.
+    pub rate: Option<u64>,
 }
 
 /// What a tagged file is given beyond what yt-dlp itself writes (title, artist, genre, date, cover): the album and the track's place in it.
@@ -135,10 +138,22 @@ struct Shared {
     queue: VecDeque<u64>,
     workers: usize,
     parallel: usize,
+    /// All the downloads together, in bytes per second; `None` = unlimited.
+    rate: Option<u64>,
     tools: Option<Tools>,
     pids: HashMap<u64, u32>,
     cancelled: HashSet<u64>,
+    /// Since when the downloads are paused (frozen); `None` = not paused.
+    paused: Option<std::time::Instant>,
+    /// Jobs whose process was thawed after a pause: if one of them then fails, it is started once more.
+    thawed: HashSet<u64>,
+    /// Jobs whose frozen process was killed because the pause was long: they are started again, not failed.
+    restart: HashSet<u64>,
 }
+
+/// A pause longer than this is not thawed: a server drops a connection that sat idle, so the frozen download is killed and started
+/// again (yt-dlp carries on from the part of the file it already has).
+pub const LONG_PAUSE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 #[derive(Default)]
 struct Gate {
@@ -272,6 +287,12 @@ impl Runner {
         lock(&self.shared).parallel = n.max(1);
     }
 
+    /// How fast all the downloads may go together, in bytes per second (`None` = no limit). It is shared between the downloads running when
+    /// each one starts, so a change reaches the downloads that start after it, not the ones already going.
+    pub fn set_rate(&self, total: Option<u64>) {
+        lock(&self.shared).rate = total;
+    }
+
     /// Queue a job and start working if a place is free. Returns the job's number.
     pub fn submit(&self, job: Job) -> u64 {
         let start_worker = {
@@ -325,7 +346,46 @@ impl Runner {
         }
     }
 
+    /// Freeze every download that runs (and keep the waiting ones from starting) until `resume`.
+    pub fn pause(&self) {
+        let mut s = lock(&self.shared);
+        if s.paused.is_some() || !s.status.values().any(JobStatus::is_active) {
+            return;
+        }
+        s.paused = Some(std::time::Instant::now());
+        for pid in s.pids.values() {
+            crate::freeze::freeze(*pid);
+        }
+    }
+
+    /// Carry on after a pause: the frozen downloads run again, unless the pause was long (see `LONG_PAUSE`): those are started again.
+    pub fn resume(&self) {
+        self.resume_after(LONG_PAUSE);
+    }
+
+    fn resume_after(&self, long: std::time::Duration) {
+        let mut s = lock(&self.shared);
+        let Some(since) = s.paused.take() else { return };
+        let restart = since.elapsed() > long;
+        let running: Vec<(u64, u32)> = s.pids.iter().map(|(id, pid)| (*id, *pid)).collect();
+        for (id, pid) in running {
+            if restart {
+                // Marked first: the process ending is what the job reads as the cue to start again.
+                s.restart.insert(id);
+                kill_tree(pid);
+            } else {
+                crate::freeze::thaw(pid);
+                s.thawed.insert(id);
+            }
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        lock(&self.shared).paused.is_some()
+    }
+
     pub fn cancel_all(&self) {
+        lock(&self.shared).paused = None;
         let ids: Vec<u64> = lock(&self.shared).status.iter().filter(|(_, st)| st.is_active()).map(|(id, _)| *id).collect();
         for id in ids {
             self.cancel(id);
@@ -347,7 +407,7 @@ impl Runner {
     fn work(&self) {
         loop {
             // A job waits (it stays "Queued") for the lookups under way to end.
-            while LOOKING.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            while LOOKING.load(std::sync::atomic::Ordering::SeqCst) > 0 || self.is_paused() {
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
             let next = {
@@ -381,7 +441,10 @@ impl Runner {
     fn execute(&self, id: u64) {
         let (job, tools) = {
             let s = lock(&self.shared);
-            (s.jobs.get(&id).cloned(), s.tools.clone())
+            // This job is already "running": it counts with the others that run now and the ones waiting for a place.
+            let running = s.status.values().filter(|st| matches!(st, JobStatus::Running(_))).count();
+            let rate = s.rate.map(|total| share(total, running + s.queue.len(), s.parallel));
+            (s.jobs.get(&id).cloned().map(|j| Job { rate, ..j }), s.tools.clone())
         };
         let (Some(job), Some(tools)) = (job, tools) else {
             self.finish(id, Err(Failure::Error("yt-dlp is not installed".to_owned())));
@@ -389,7 +452,7 @@ impl Runner {
         };
         // Taking the gate also waits for an update that another job has under way, so this one starts with the new yt-dlp.
         let epoch0 = lock(&self.gate).epoch;
-        let mut result = self.attempt(id, &job, &tools, None);
+        let mut result = self.run(id, &job, &tools, None);
         match &result {
             Err(Failure::Error(reason)) if needs_login(reason) => {
                 // A newer yt-dlp does not sign anyone in: borrow a browser's login instead.
@@ -399,7 +462,7 @@ impl Runner {
             }
             Err(Failure::Error(_)) if self.update_helps(epoch0) => {
                 // The update may have replaced the program; the same tools struct names the same path.
-                result = self.attempt(id, &job, &tools, None);
+                result = self.run(id, &job, &tools, None);
             }
             _ => {}
         }
@@ -410,7 +473,7 @@ impl Runner {
     /// so the caller keeps the real error.
     fn retry_with_login(&self, id: u64, job: &Job, tools: &Tools) -> Option<Result<Option<PathBuf>, Failure>> {
         for signin in self.login_order() {
-            match self.attempt(id, job, tools, Some(&signin)) {
+            match self.run(id, job, tools, Some(&signin)) {
                 Ok(path) => {
                     self.login_worked(&signin);
                     return Some(Ok(path));
@@ -436,6 +499,24 @@ impl Runner {
         g.epoch > epoch0
     }
 
+    /// One run of a job, started again when a pause asked for it: after a long pause (the frozen process was killed) always, and once
+    /// after a failure that came right after a thaw (a connection that did not survive the freeze).
+    fn run(&self, id: u64, job: &Job, tools: &Tools, signin: Option<&Signin>) -> Result<Option<PathBuf>, Failure> {
+        loop {
+            let result = self.attempt(id, job, tools, signin);
+            let mut s = lock(&self.shared);
+            let thawed = s.thawed.remove(&id);
+            if matches!(result, Err(Failure::Cancelled)) {
+                s.restart.remove(&id);
+                return result;
+            }
+            if s.restart.remove(&id) || (thawed && result.is_err()) {
+                continue;
+            }
+            return result;
+        }
+    }
+
     fn finish(&self, id: u64, result: Result<Option<PathBuf>, Failure>) {
         let mut s = lock(&self.shared);
         s.pids.remove(&id);
@@ -447,6 +528,10 @@ impl Runner {
             Err(Failure::Error(e)) => JobStatus::Failed(e),
         };
         s.status.insert(id, status);
+        // The last download is over: nothing is left to hold.
+        if !s.status.values().any(JobStatus::is_active) {
+            s.paused = None;
+        }
     }
 
     fn attempt(&self, id: u64, job: &Job, tools: &Tools, signin: Option<&Signin>) -> Result<Option<PathBuf>, Failure> {
@@ -464,6 +549,10 @@ impl Runner {
         {
             let mut s = lock(&self.shared);
             s.pids.insert(id, child.id());
+            // Started while the downloads are paused (a worker was between the check and the start): it is born frozen.
+            if s.paused.is_some() {
+                crate::freeze::freeze(child.id());
+            }
             // Cancelled between the check and the start: the process is already ours to stop.
             if s.cancelled.contains(&id) {
                 drop(s);
@@ -529,10 +618,20 @@ fn kill_tree(pid: u32) {
         // The children first, then the process itself.
         let _ = std::process::Command::new("pkill").args(["-TERM", "-P", &pid.to_string()]).status();
         let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        // A frozen process only acts on the signal once it runs again.
+        let _ = std::process::Command::new("pkill").args(["-CONT", "-P", &pid.to_string()]).status();
+        let _ = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status();
     }
 }
 
 /// Every argument of one yt-dlp run. The program's own config files are ignored, so a machine's setup cannot change what a job does.
+/// What one download may use of a `total` (bytes per second) when `active` downloads are running or waiting and at most `parallel` run at once:
+/// an equal part of the total, never less than 1 KB/s.
+pub fn share(total: u64, active: usize, parallel: usize) -> u64 {
+    let at_once = active.min(parallel).max(1) as u64;
+    (total / at_once).max(crate::traffic::KB)
+}
+
 pub fn build_args(job: &Job, tools: &Tools, signin: Option<&Signin>) -> Vec<OsString> {
     // The cache is yt-dlp's own folder beside it: the default one (the user's home) may be unwritable.
     let mut a: Vec<OsString> = vec![OsString::from("--ignore-config"), OsString::from("--cache-dir"), crate::ytdlp::cache_dir(&tools.ytdlp).into_os_string()];
@@ -564,6 +663,10 @@ pub fn build_args(job: &Job, tools: &Tools, signin: Option<&Signin>) -> Vec<OsSt
     }
     if let (Some(tags), true) = (&job.tags, job.preset.is_audio()) {
         a.extend(tags.args(matches!(job.preset.mode, crate::preset::Mode::Audio { format: crate::preset::AudioFormat::Opus | crate::preset::AudioFormat::Best })).into_iter().map(OsString::from));
+    }
+    if let Some(rate) = job.rate {
+        a.push(OsString::from("--limit-rate"));
+        a.push(OsString::from(rate.to_string()));
     }
     a.push(OsString::from("-P"));
     a.push(job.folder.clone().into_os_string());
@@ -636,7 +739,7 @@ mod tests {
 
     #[test]
     fn the_command_ignores_the_machines_config_and_ends_with_the_link() {
-        let job = Job { url: "https://example.test/v".into(), preset: seeded(false).remove(0), folder: PathBuf::from("out dir"), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None };
+        let job = Job { url: "https://example.test/v".into(), preset: seeded(false).remove(0), folder: PathBuf::from("out dir"), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None, rate: None };
         let tools = Tools { ytdlp: PathBuf::from("yt-dlp"), ffmpeg_dir: Some(PathBuf::from("ff")), deno: None };
         let a: Vec<String> = build_args(&job, &tools, None).iter().map(|s| s.to_string_lossy().into_owned()).collect();
         assert_eq!(a[0], "--ignore-config");
@@ -651,7 +754,7 @@ mod tests {
 
     #[test]
     fn yt_dlp_is_given_the_installed_deno_and_nothing_when_there_is_none() {
-        let job = Job { url: "https://example.test/v".into(), preset: seeded(false).remove(0), folder: PathBuf::from("out"), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None };
+        let job = Job { url: "https://example.test/v".into(), preset: seeded(false).remove(0), folder: PathBuf::from("out"), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None, rate: None };
         let without = Tools { ytdlp: PathBuf::from("yt-dlp"), ffmpeg_dir: None, deno: None };
         let a: Vec<String> = build_args(&job, &without, None).iter().map(|s| s.to_string_lossy().into_owned()).collect();
         assert!(!a.contains(&"--js-runtimes".to_owned()));
@@ -683,8 +786,26 @@ mod tests {
         dir
     }
 
+    #[test]
+    fn the_total_is_shared_between_the_downloads_that_run_together() {
+        assert_eq!(share(512_000, 2, 2), 256_000);
+        assert_eq!(share(512_000, 1, 2), 512_000, "one download alone gets all of it");
+        assert_eq!(share(512_000, 5, 2), 256_000, "no more than the places that run at once");
+        assert_eq!(share(1500, 2, 2), 1024, "never less than a KB a second");
+    }
+
+    #[test]
+    fn a_limited_download_asks_yt_dlp_for_its_rate() {
+        let tools = Tools { ytdlp: PathBuf::from("y"), ffmpeg_dir: None, deno: None };
+        let words = |rate: Option<u64>| -> Vec<String> { build_args(&Job { rate, ..job() }, &tools, None).iter().map(|s| s.to_string_lossy().into_owned()).collect() };
+        let at = words(Some(256_000));
+        let i = at.iter().position(|w| w == "--limit-rate").expect("the option is there");
+        assert_eq!(at[i + 1], "256000");
+        assert!(!words(None).iter().any(|w| w == "--limit-rate"));
+    }
+
     fn job() -> Job {
-        Job { url: "https://example.test/v".into(), preset: seeded(false).remove(0), folder: PathBuf::from("."), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None }
+        Job { url: "https://example.test/v".into(), preset: seeded(false).remove(0), folder: PathBuf::from("."), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None, rate: None }
     }
 
     fn wait_over(r: &Runner, n: usize) -> Vec<(u64, JobStatus)> {
@@ -948,7 +1069,7 @@ mod tests {
         let presets: Vec<_> = seeded(false).into_iter().chain(seeded(true)).collect();
         for id in ["video-mp4-720", "audio-mp3"] {
             let preset = presets.iter().find(|p| p.id == id).unwrap().clone();
-            r.submit(Job { url: "https://www.youtube.com/watch?v=jNQXAC9IVRw".into(), preset, folder: out.clone(), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None });
+            r.submit(Job { url: "https://www.youtube.com/watch?v=jNQXAC9IVRw".into(), preset, folder: out.clone(), name: crate::destination::template(crate::destination::DEFAULT_PATTERN), overwrite: Overwrite::Skip, tags: None, rate: None });
         }
         let snap = wait_over(&r, 2);
         for (_, s) in &snap {
@@ -969,5 +1090,41 @@ mod tests {
         r.forget(id);
         assert!(r.snapshot().is_empty());
         assert_eq!(r.status(id), None);
+    }
+
+    #[test]
+    fn a_pause_thaws_a_short_one_and_restarts_after_a_long_one() {
+        const NOBODY: u32 = 4_000_000_000;
+        let runner = Runner::new(Arc::new(|| Ok(false)));
+        assert!(!{ runner.pause(); runner.is_paused() }, "nothing to pause while nothing is active");
+        {
+            let mut s = lock(&runner.shared);
+            s.status.insert(1, JobStatus::Running(Progress::default()));
+            s.pids.insert(1, NOBODY);
+        }
+        runner.pause();
+        assert!(runner.is_paused());
+        runner.resume_after(std::time::Duration::from_secs(3600));
+        assert!(!runner.is_paused());
+        {
+            let s = lock(&runner.shared);
+            assert!(s.thawed.contains(&1) && !s.restart.contains(&1), "a short pause thaws");
+        }
+        lock(&runner.shared).thawed.clear();
+        runner.pause();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        runner.resume_after(std::time::Duration::ZERO);
+        let s = lock(&runner.shared);
+        assert!(s.restart.contains(&1) && !s.thawed.contains(&1), "a long pause starts again");
+    }
+
+    #[test]
+    fn stop_while_paused_clears_the_pause() {
+        let runner = Runner::new(Arc::new(|| Ok(false)));
+        lock(&runner.shared).status.insert(1, JobStatus::Queued);
+        runner.pause();
+        assert!(runner.is_paused());
+        runner.cancel_all();
+        assert!(!runner.is_paused());
     }
 }

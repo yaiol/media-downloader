@@ -16,7 +16,7 @@ use crate::{
 use dioxus::prelude::*;
 use dioxus_free_icons::{
     Icon,
-    icons::ld_icons::{LdAudioLines, LdClapperboard, LdFilm, LdFolder, LdFolderOpen, LdFolderSearch, LdMusic, LdPause, LdPlay, LdRotateCw, LdSquare, LdVideo, LdVolume2, LdX},
+    icons::ld_icons::{LdFilm, LdFolder, LdFolderSearch, LdGauge, LdMusic, LdPause, LdPlay, LdRotateCw, LdVideo, LdVolume2, LdX},
 };
 use engine::runner::{Job, JobStatus, Overwrite, Tags};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
@@ -51,6 +51,19 @@ struct Row {
 }
 
 impl Row {
+    /// The broom removes this row: it is finished AND it is in the list shown (the other list keeps its finished rows).
+    fn clearable(&self, audio: bool, statuses: &HashMap<u64, JobStatus>) -> bool {
+        self.audio == audio && matches!(self.status(statuses), Some(JobStatus::Done(_)))
+    }
+
+    /// The row's name as the list and the player show it: the track number first, when the file has one.
+    fn name(&self) -> String {
+        match self.tags.track {
+            Some((n, of)) => format!("{n:0w$}  {}", self.title, w = of.to_string().len().max(2)),
+            None => self.title.clone(),
+        }
+    }
+
     /// Where the row's download stands: its job's status, or "done" for a row that came back finished.
     fn status(&self, statuses: &HashMap<u64, JobStatus>) -> Option<JobStatus> {
         match self.job {
@@ -132,6 +145,8 @@ fn can_submit(row: &Row, statuses: &HashMap<u64, JobStatus>) -> bool {
 #[component]
 pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_manage: EventHandler<String>, mut audio_list: Signal<bool>, add_clipboard: Signal<u32>, clear_request: Signal<u32>, mut can_clear: Signal<bool>) -> Element {
     let mut pick_nonce = use_signal(|| 0u32);
+    // The downloads are frozen (Pause). Read from the runner when the view is made, so it survives a change of tab.
+    let mut paused = use_signal(|| RUNNER.is_paused());
     // The lists of the last session come back: a link whose lookup had answered as its row, the others are looked up again below.
     let kept = use_hook(|| std::rc::Rc::new(links::load()));
     let mut rows = use_signal({
@@ -141,12 +156,20 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
     let mut next_id = use_signal(|| rows.peek().len() as u64 + 1);
     let mut lookup_tick = use_signal(|| 0u32);
     let statuses = run.statuses;
-    let player = Player::new();
+    // One player per list: what plays under Video and what plays under Audio are kept apart, each with its file, its place and its picture.
+    let video_player = Player::new();
+    let audio_player = Player::new();
     // The converters a finished file can be opened in (the video one, the audio one), looked for once.
     let (video_converter, audio_converter) = use_hook(|| (converters::VIDEO.installed(), converters::AUDIO.installed()));
+    // The button that opens a file in a converter carries that converter's own icon.
+    let (video_icon, audio_icon) = use_hook(|| (converters::VIDEO.icon_src(), converters::AUDIO.icon_src()));
 
-    // How many download at once follows the panel.
-    use_effect(move || RUNNER.set_parallel(settings.read().parallel as usize));
+    // The picked traffic set: how many download at once, and how fast all of them may go together.
+    use_effect(move || {
+        let set = settings.read().traffic();
+        RUNNER.set_parallel(set.parallel as usize);
+        RUNNER.set_rate(set.limit_bytes());
+    });
     // Off, no browser is ever touched; on, only a video that asks for a sign-in borrows the login of one the PC has.
     use_effect(move || RUNNER.set_login(settings.read().login.then(engine::browsers::installed)));
     // A cookies file the user picked is tried first, whether or not the browsers are on.
@@ -157,7 +180,7 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
 
     let t = |key: &str| i18n::t(&lang, key);
 
-    // Look the links up: each becomes a row at once ("Looking up"), then one row per video once yt-dlp has answered.
+    // Look the links up: each becomes a row at once ("Analyzing"), then one row per video once yt-dlp has answered.
     let mut add_links = move |text: String, audio: bool| {
         for url in links_in(&text) {
             // A link already in THIS list is not added twice; the same link may be in both lists (its video and its sound).
@@ -250,32 +273,36 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
     let on_audio = audio_list();
     let destination = cfg.destination(on_audio);
     let destination_id = destination.id.clone();
-    let folder = settings::folder_of(&destination);
     let destinations = engine::destination::repaired(cfg.destinations.clone());
     let picked_once = cfg.one_off(on_audio).cloned();
     let replace = cfg.replace;
-    let parallel = cfg.parallel;
+    let traffics = cfg.traffics.clone();
+    let traffic_id = cfg.traffic().id;
 
     let _ = lookup_tick();
     let snapshot = statuses.read().clone();
-    // The finished files, in the order of the list: what the player steps through.
-    let queue: Vec<Track> = rows
-        .read()
-        .iter()
-        .filter(|r| r.audio == on_audio)
-        .filter_map(|r| match r.status(&snapshot) {
-            Some(JobStatus::Done(Some(p))) => Some(Track { path: p, title: r.title.clone(), video: !r.audio }),
-            _ => None,
-        })
-        .collect();
+    // The finished files of each list, in the order of the list: what its player steps through.
+    let queue_of = |audio: bool| -> Vec<Track> {
+        rows.read()
+            .iter()
+            .filter(|r| r.audio == audio)
+            .filter_map(|r| match r.status(&snapshot) {
+                Some(JobStatus::Done(Some(p))) => Some(Track { path: p, title: r.name(), video: !r.audio }),
+                _ => None,
+            })
+            .collect()
+    };
+    let (video_queue, audio_queue) = (queue_of(false), queue_of(true));
     let busy = snapshot.values().any(JobStatus::is_active);
+    // Whatever ends the downloads (the last one finishing) lets the runner forget the pause: follow it.
+    let is_paused = paused() && busy;
     let waiting = rows.read().iter().filter(|r| r.audio == on_audio && can_submit(r, &snapshot)).count();
     let ready = (run.ready)();
     let shown_rows: Vec<Row> = rows.read().iter().filter(|r| r.audio == on_audio).cloned().collect();
     let have_rows = !shown_rows.is_empty();
     let done = snapshot.values().filter(|s| matches!(s, JobStatus::Done(_))).count();
     let failed = snapshot.values().filter(|s| matches!(s, JobStatus::Failed(_))).count();
-    let any_over = rows.read().iter().any(|r| matches!(r.status(&snapshot), Some(JobStatus::Done(_))));
+    let any_over = rows.read().iter().any(|r| r.clearable(on_audio, &snapshot));
 
     let popup = tools::popup(&lang, &run);
     let mut dismissed = run.dismissed;
@@ -305,9 +332,10 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                 url: row.url.clone(),
                 preset: cfg.preset_for(row.audio),
                 folder: destination.folder_for(&base, row.set.as_ref()),
-                name: destination.template(),
+                name: destination.template(row.tags.track),
                 overwrite: if cfg.replace { Overwrite::Replace } else { Overwrite::Skip },
                 tags: cfg.tag.then(|| row.tags.clone()),
+                rate: None,
             }));
         }
     };
@@ -315,8 +343,9 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
 
     let mut clear_done = move || {
         let snapshot = statuses.peek().clone();
+        let shown = *audio_list.peek();
         rows.write().retain(|r| {
-            let over = matches!(r.status(&snapshot), Some(JobStatus::Done(_)));
+            let over = r.clearable(shown, &snapshot);
             if over {
                 if let Some(j) = r.job {
                     RUNNER.forget(j);
@@ -346,7 +375,11 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
     let s_open_audio = t("tipMainOpenIn").replace("{app}", converters::AUDIO.name);
     let s_retry = t("tipMainRetry");
     let s_play = t("tipMainPlay");
-    let (s_parallel, s_download, s_stop, s_open) = (t("tipMainParallel"), t("tipMainDownload"), t("tipMainStop"), t("tipMainOpenFolder"));
+    let (s_download, s_stop) = (t("tipMainDownload"), t("tipMainStop"));
+    let (s_traffic, s_traffic_tip, s_edit_traffic) = (t("lblMainTraffic"), t("tipMainTraffic"), t("tipMainEditTraffic"));
+    let (s_download_label, s_stop_label) = (t("btnMainDownload"), t("btnMainStop"));
+    let (s_pause_label, s_resume_label) = (t("btnMainPause"), t("btnMainResume"));
+    let (s_pause, s_resume) = (t("tipMainPauseAll"), t("tipMainResume"));
     let s_empty = t("msgMainListEmpty");
     let video_presets = engine::preset::repaired(cfg.presets.clone(), false);
     let audio_presets = engine::preset::repaired(cfg.audios.clone(), true);
@@ -357,8 +390,12 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                 if let Some(popup) = popup {
                     ToolPopup { lang: lang.clone(), popup, on_close: move |_| dismissed.set(true) }
                 }
-                if let Some(video) = player.track.read().as_ref().map(|t| t.video) {
-                    PlayerPane { player, queue, lang: lang.clone(), away: video == on_audio }
+                // Both players stay mounted: the one of the other list waits out of sight, paused, and is there as it was when its list is back.
+                if video_player.track.read().is_some() {
+                    PlayerPane { player: video_player, queue: video_queue, lang: lang.clone(), away: on_audio }
+                }
+                if audio_player.track.read().is_some() {
+                    PlayerPane { player: audio_player, queue: audio_queue, lang: lang.clone(), away: !on_audio }
                 }
                 div { class: "uis-lvw-scroll dl-list",
                     if !have_rows {
@@ -379,6 +416,7 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                                 (RowState::LookupFailed(reason), _) => (t("msgMainStatusLookupFailed"), reason.clone(), "err", None),
                                 (RowState::Ready, None) => (String::new(), String::new(), "idle", None),
                                 (RowState::Ready, Some(JobStatus::Queued)) => (t("msgMainStatusQueued"), String::new(), "idle", None),
+                                (RowState::Ready, Some(JobStatus::Running(p))) if is_paused => (t("msgMainStatusPaused"), String::new(), "idle", p.fraction),
                                 (RowState::Ready, Some(JobStatus::Running(p))) => (percent_text(p.fraction), String::new(), "run", p.fraction),
                                 (RowState::Ready, Some(JobStatus::Done(path))) => {
                                     (t("msgMainStatusDone"), path.as_ref().map(|p| p.display().to_string()).unwrap_or_default(), "ok", None)
@@ -396,13 +434,13 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                                 Some(JobStatus::Done(Some(p))) => Some(p.clone()),
                                 _ => None,
                             };
-                            let name = match row.tags.track {
-                                Some((n, of)) => format!("{n:0w$}  {}", row.title, w = of.to_string().len().max(2)),
-                                None => row.title.clone(),
-                            };
+                            let name = row.name();
+                            // The row whose file is in the player (playing or paused) is the highlighted one.
+                            let player = if is_audio { audio_player } else { video_player };
+                            let row_class = if shown.as_deref().is_some_and(|f| player.is_open_on(f)) { "uis-lvw-item dl-row active" } else { "uis-lvw-item dl-row" };
                             let width = fraction.map_or(0, |f| (f * 100.0).round() as u32);
                             rsx! {
-                                div { key: "{id}", class: "uis-lvw-item dl-row",
+                                div { key: "{id}", class: row_class,
                                     div { class: "uis-lvw-item-icon dl-cover",
                                         if let Some(src) = &row.thumbnail {
                                             img { class: "dl-thumb", src: "{src}", draggable: false }
@@ -430,7 +468,7 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                                             title: "{s_play}",
                                             "aria-label": "{s_play}",
                                             onclick: {
-                                                let track = Track { path: file.clone(), title: row.title.clone(), video: !is_audio };
+                                                let track = Track { path: file.clone(), title: name.clone(), video: !is_audio };
                                                 move |_| player.play(track.clone())
                                             },
                                             if player.is_sounding(&file) {
@@ -449,11 +487,7 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                                                         title: "{tip}",
                                                         "aria-label": "{tip}",
                                                         onclick: move |_| converters::open(&program, &file),
-                                                        if is_audio {
-                                                            Icon { width: 14, height: 14, icon: LdAudioLines }
-                                                        } else {
-                                                            Icon { width: 14, height: 14, icon: LdClapperboard }
-                                                        }
+                                                        img { class: "dl-app-icon", src: if is_audio { audio_icon.clone() } else { video_icon.clone() }, draggable: false }
                                                     }
                                                 }
                                             }
@@ -604,52 +638,66 @@ pub fn Downloads(settings: Signal<Settings>, run: RunState, lang: String, on_man
                         option { value: "replace", selected: replace, "{s_replace}" }
                     }
                 }
-                div { class: "dl-panel-run uis-cmp-run",
-                    div { class: "uis-barh-grp",
-                        select {
-                            class: "uis-ddn-std",
-                            title: "{s_parallel}",
-                            "aria-label": "{s_parallel}",
-                            value: "{parallel}",
-                            onchange: move |e| {
-                                if let Ok(n) = e.value().parse::<u32>() {
-                                    settings.write().parallel = n.clamp(1, settings::MAX_PARALLEL);
-                                }
-                            },
-                            for n in 1..=settings::MAX_PARALLEL {
-                                option { key: "{n}", value: "{n}", selected: n == parallel, "{n}" }
-                            }
-                        }
-                        if busy {
-                            button {
-                                class: "uis-btn ico",
-                                title: "{s_stop}",
-                                "aria-label": "{s_stop}",
-                                onclick: move |_| RUNNER.cancel_all(),
-                                Icon { width: 14, height: 14, icon: LdSquare }
-                            }
-                        }
-                        button {
-                            class: "uis-btn ico",
-                            title: "{s_download}",
-                            "aria-label": "{s_download}",
-                            disabled: !ready || waiting == 0,
-                            onclick: download,
-                            Icon { width: 14, height: 14, icon: LdPlay }
+                UisFldLabelled { compact: true, label: s_traffic.clone(), title: s_traffic_tip.clone(),
+                    select {
+                        class: "uis-ddn-std",
+                        title: "{s_traffic_tip}",
+                        "aria-label": "{s_traffic_tip}",
+                        value: "{traffic_id}",
+                        onchange: move |e| settings.write().traffic_id = e.value(),
+                        for tr in traffics {
+                            option { key: "{tr.id}", value: "{tr.id}", selected: tr.id == traffic_id, "{tr.name}" }
                         }
                     }
                     button {
                         class: "uis-btn ico",
-                        title: "{s_open}",
-                        "aria-label": "{s_open}",
-                        onclick: {
-                            let folder = folder.clone();
-                            move |_| {
-                                let _ = std::fs::create_dir_all(&folder);
-                                let _ = open::that(&folder);
+                        title: "{s_edit_traffic}",
+                        "aria-label": "{s_edit_traffic}",
+                        onclick: move |_| on_manage.call(manager::TRAFFIC.to_owned()),
+                        Icon { width: 14, height: 14, icon: LdGauge }
+                    }
+                }
+                div { class: "dl-panel-run uis-cmp-run",
+                    // Download; while the downloads run, Pause (Resume when paused) beside Stop.
+                    if busy {
+                        if is_paused {
+                            button {
+                                class: "uis-btn",
+                                title: "{s_resume}",
+                                onclick: move |_| {
+                                    RUNNER.resume();
+                                    paused.set(false);
+                                },
+                                "{s_resume_label}"
                             }
-                        },
-                        Icon { width: 14, height: 14, icon: LdFolderOpen }
+                        } else {
+                            button {
+                                class: "uis-btn",
+                                title: "{s_pause}",
+                                onclick: move |_| {
+                                    RUNNER.pause();
+                                    paused.set(RUNNER.is_paused());
+                                },
+                                "{s_pause_label}"
+                            }
+                        }
+                        button {
+                            class: "uis-btn primary",
+                            title: "{s_stop}",
+                            onclick: move |_| {
+                                RUNNER.cancel_all();
+                                paused.set(false);
+                            },
+                            "{s_stop_label}"
+                        }
+                    } else {
+                        button {
+                            class: "uis-btn primary",
+                            title: "{s_download}",
+                            disabled: !ready || waiting == 0,
+                            onclick: download,
+                            "{s_download_label}"
+                        }
                     }
                 }
             }
@@ -700,6 +748,20 @@ mod tests {
         assert!(!can_submit(&row(RowState::Ready, Some(7)), &st));
         st.insert(7, JobStatus::Queued);
         assert!(!can_submit(&row(RowState::Ready, Some(7)), &st));
+    }
+
+    #[test]
+    fn the_broom_clears_only_the_finished_rows_of_the_list_shown() {
+        let row = |audio, job| Row { id: 1, url: "u".into(), title: "t".into(), sub: String::new(), thumbnail: None, audio, tags: Tags::default(), set: None, state: RowState::Ready, job, done: None };
+        let mut st = std::collections::HashMap::new();
+        st.insert(1, JobStatus::Done(None));
+        st.insert(2, JobStatus::Queued);
+        let (video, sound) = (row(false, Some(1)), row(true, Some(1)));
+        assert!(video.clearable(false, &st) && !video.clearable(true, &st), "a finished video is cleared from the Video list only");
+        assert!(sound.clearable(true, &st) && !sound.clearable(false, &st), "a finished sound is cleared from the Audio list only");
+        assert!(!row(false, Some(2)).clearable(false, &st), "a row that is not finished stays");
+        let kept = Row { done: Some(PathBuf::from("kept.mp3")), ..row(true, None) };
+        assert!(kept.clearable(true, &st), "a row that came back finished is cleared too");
     }
 }
 

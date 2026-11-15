@@ -15,14 +15,22 @@ pub struct Converter {
     pub name: &'static str,
     /// The first version that opens a file named at its start.
     since: &'static str,
+    /// Its own icon (a 32 px copy of the app's), drawn on the button that opens a file in it.
+    icon: &'static [u8],
 }
 
 /// The converter a finished video is opened in.
-pub const VIDEO: Converter = Converter { id: "ffmpeg-video-studio", name: "FFmpeg Video Studio", since: "2.0.2" };
+pub const VIDEO: Converter = Converter { id: "ffmpeg-video-studio", name: "FFmpeg Video Studio", since: "2.0.2", icon: include_bytes!("../assets/ffmpeg-video-studio.png") };
 /// The converter a finished audio file is opened in.
-pub const AUDIO: Converter = Converter { id: "ffmpeg-audio-studio", name: "FFmpeg Audio Studio", since: "2.0.2" };
+pub const AUDIO: Converter = Converter { id: "ffmpeg-audio-studio", name: "FFmpeg Audio Studio", since: "2.0.2", icon: include_bytes!("../assets/ffmpeg-audio-studio.png") };
 
 impl Converter {
+    /// Its icon as an address an image element can show.
+    pub fn icon_src(&self) -> String {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        format!("data:image/png;base64,{}", STANDARD.encode(self.icon))
+    }
+
     /// The installed program, when there is one that can open a file.
     pub fn installed(&self) -> Option<PathBuf> {
         let (folder, version) = entry(self.id)?;

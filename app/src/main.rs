@@ -22,7 +22,7 @@ use dioxus::prelude::*;
 use downloads::Downloads;
 use dioxus_free_icons::{
     Icon,
-    icons::ld_icons::{LdCircleHelp, LdFolder, LdFolderOpen, LdMusic, LdPlus, LdSettings, LdVideo, LdVolume2},
+    icons::ld_icons::{LdCircleHelp, LdFolder, LdFolderOpen, LdGauge, LdMusic, LdPlus, LdSettings, LdVideo, LdVolume2},
 };
 
 const CSS: [&str; 7] = [
@@ -64,7 +64,8 @@ fn app_version_build() -> String {
 /// The window has no system frame: the app draws its own bar (`UisBarWindow`), which moves it and holds the three
 /// window buttons. The system still resizes it from its edges, and on Windows it keeps its shadow.
 fn frameless(window: dioxus::desktop::WindowBuilder) -> dioxus::desktop::WindowBuilder {
-    let window = window.with_decorations(false);
+    // Narrower than this the list, the player bar and the panel no longer fit side by side.
+    let window = window.with_decorations(false).with_min_inner_size(dioxus::desktop::LogicalSize::new(640.0, 400.0));
     #[cfg(windows)]
     let window = {
         use dioxus::desktop::tao::platform::windows::WindowBuilderExtWindows;
@@ -210,6 +211,7 @@ fn App() -> Element {
     let tab_video = t("tabStgVideo");
     let tab_audio = t("tabStgAudio");
     let tab_destinations = t("tabStgDestinations");
+    let tab_traffic = t("tabStgTraffic");
     let (lbl_tag, msg_tag) = (t("lblStgTag"), t("msgStgTagExplain"));
     let (lbl_login, msg_login) = (t("lblStgLogin"), t("msgStgLoginExplain"));
     let (lbl_cookies, msg_cookies, btn_browse) = (t("lblStgCookies"), t("msgStgCookiesExplain"), t("btnDstBrowse"));
@@ -241,7 +243,13 @@ fn App() -> Element {
                 tip_close,
                 on_minimize: move |_| dioxus::desktop::window().set_minimized(true),
                 on_maximize: move |_| dioxus::desktop::window().toggle_maximized(),
-                on_close: move |_| dioxus::desktop::window().close(),
+                on_close: move |_| {
+                    // Frozen downloads left behind would never run again and would hold their files: stop them with the window.
+                    if tools::RUNNER.is_paused() {
+                        tools::RUNNER.cancel_all();
+                    }
+                    dioxus::desktop::window().close();
+                },
                 on_drag: move |_| dioxus::desktop::window().drag(),
                 on_menu: move |_| window_menu::show(),
                 button {
@@ -417,6 +425,11 @@ fn App() -> Element {
                                 label: tab_destinations.clone(),
                                 icon: rsx! { Icon { width: 14, height: 14, icon: LdFolder } },
                             },
+                            UisAppTab {
+                                key: manager::TRAFFIC.to_owned(),
+                                label: tab_traffic.clone(),
+                                icon: rsx! { Icon { width: 14, height: 14, icon: LdGauge } },
+                            },
                         ],
                         initial_tab: settings_tab(),
                         on_tab: move |key: String| settings_tab.set(key),
@@ -427,6 +440,8 @@ fn App() -> Element {
                                 manager::PresetEditor { settings, audio: true }
                             } else if settings_tab() == manager::DESTINATIONS {
                                 manager::DestinationEditor { settings, audio: audio_list() }
+                            } else if settings_tab() == manager::TRAFFIC {
+                                manager::TrafficEditor { settings }
                             }
                         }),
                     }
