@@ -2,7 +2,7 @@
 //! the selected preset on the right. Every change is stored at once, there is no Save button. The saved order is the order of the
 //! panel's drop-down too.
 //!
-//! ⚠ CLAUDE: NO HARDCODED UI STRINGS. File types (MP4, MKV, WebM, MP3, M4A, Opus) and heights (1080p) are names and stay literal;
+//! ⚠ NO HARDCODED UI STRINGS. File types (MP4, MKV, WebM, MP3, M4A, Opus) and heights (1080p) are names and stay literal;
 //! everything else goes through the t() lookup with a literal key at the call site.
 
 use crate::{

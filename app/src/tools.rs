@@ -5,7 +5,7 @@
 //! state the window reports instead of failing later at Download. Whatever starts by itself (the installs at launch, the updates,
 //! the follow-up of a run) lives in `RunState::follow`, never in a view, or it runs again every time the view is mounted.
 //!
-//! ⚠ CLAUDE: NO HARDCODED UI STRINGS. Everything goes through the t() lookup with a literal key at the call site.
+//! ⚠ NO HARDCODED UI STRINGS. Everything goes through the t() lookup with a literal key at the call site.
 
 use crate::{i18n, settings};
 use dioxus::prelude::*;

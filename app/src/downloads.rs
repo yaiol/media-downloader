@@ -4,7 +4,7 @@
 //! playlist is opened into its videos before anything is fetched. The panel holds the choices of the whole run (preset, folder,
 //! what to do when the file exists, how many at once); a row carries none of its own.
 //!
-//! ⚠ CLAUDE: NO HARDCODED UI STRINGS. Everything goes through the t() lookup with a literal key at the call site.
+//! ⚠ NO HARDCODED UI STRINGS. Everything goes through the t() lookup with a literal key at the call site.
 
 use crate::{
     catalog::UisFldLabelled,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3 — 2026-11-22
+
+- The Windows installer now asks whether to install for everyone on the computer or only for you. "Only for you" needs no administrator prompt and installs to your own Programs folder. An update keeps the choice and folder of the previous install, and the uninstaller removes what that install wrote
+- The installer accepts /ALLUSERS and /CURRENTUSER on the command line for a silent install
+- Settings opens faster: the General and About pages are built the first time you open them
+
 ## 1.0.2 — 2026-11-15
 
 - New traffic limits: a named set holds a speed limit shared by all the downloads and how many run at once. Pick one with the new Traffic drop-down in the panel, and edit the sets in Settings > Traffic limits (new, duplicate, delete, drag to reorder). Two sets come with the app: Unlimited (2 at once) and Background (500 KB/s, 1 at once)
